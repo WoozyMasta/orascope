@@ -10,6 +10,7 @@ import (
 	"errors"
 	"testing"
 
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -172,5 +173,30 @@ func TestConvertEntryCombinesCredentialForms(t *testing.T) {
 	}
 	if credential.RefreshToken != "refresh-token" || credential.AccessToken != "access-token" {
 		t.Fatalf("unexpected token credential: %#v", credential)
+	}
+}
+
+// TestGuardMountFromFiltersCandidatesByDestinationPrincipal verifies relative mount paths.
+func TestGuardMountFromFiltersCandidatesByDestinationPrincipal(t *testing.T) {
+	adapter, err := New(WithDockerAuthConfigJSON([]byte(`{"auths":{
+		"registry.test/team":{"auth":"dGVhbTp0ZWFt"},
+		"registry.test/other":{"auth":"b3RoZXI6b3RoZXI="}
+	}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	guard := adapter.GuardMountFrom(
+		registry.Reference{Registry: "registry.test", Repository: "team/destination"},
+		func(context.Context, ocispec.Descriptor) ([]string, error) {
+			return []string{"team/source", "other/source"}, nil
+		},
+	)
+	candidates, err := guard(context.Background(), ocispec.Descriptor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0] != "team/source" {
+		t.Fatalf("unexpected mount candidates: %#v", candidates)
 	}
 }

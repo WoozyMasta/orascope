@@ -103,17 +103,17 @@ func (a *Adapter) GuardMountFrom(
 
 		allowed := make([]string, 0, len(candidates))
 		for _, candidate := range candidates {
-			ref, err := registry.ParseReference(candidate)
-			if err != nil {
-				return nil, fmt.Errorf("parse mount candidate: %w", err)
+			ref := registry.Reference{
+				Registry:   destination.Registry,
+				Repository: candidate,
+			}
+			if err := ref.ValidateRepository(); err != nil {
+				return nil, fmt.Errorf("invalid mount candidate %q: %w", candidate, err)
 			}
 
-			if ref.Registry != destination.Registry {
-				// A cross-registry mount would send a source reference to another host.
-				continue
-			}
-
-			match := a.resolve(ctx, ref.Registry, ref.Repository, nil)
+			// ORAS MountFrom returns repository names relative to the destination registry, not full references.
+			// ParseReference would treat the first path segment as a registry and reject valid mount candidates.
+			match := a.resolve(ctx, destination.Registry, candidate, nil)
 			if match.err != nil {
 				return nil, match.err
 			}
