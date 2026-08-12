@@ -332,7 +332,8 @@ func TestScopedBasicAuthenticationDoesNotLeakAcrossRepositories(t *testing.T) {
 		"org-a": {username: "user-a", password: "password-a"},
 		"org-b": {username: "user-b", password: "password-b"},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
 		if len(parts) < 4 || parts[0] != "v2" || parts[2] != "app" {
 			http.NotFound(writer, request)
@@ -379,4 +380,137 @@ func TestScopedBasicAuthenticationDoesNotLeakAcrossRepositories(t *testing.T) {
 			t.Fatalf("list tags for %s: %v", repository, err)
 		}
 	}
+}
+
+// TestNewDefaultPrefersScopedCredentialsBeforeSourcePriority verifies discovery policy.
+func TestNewDefaultPrefersScopedCredentialsBeforeSourcePriority(t *testing.T) {
+	directory := t.TempDir()
+	dockerDirectory := filepath.Join(directory, "docker")
+	registryAuthFile := filepath.Join(directory, "containers-auth.json")
+	if err := os.MkdirAll(dockerDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dockerDirectory, "config.json"), []byte(`{"auths":{
+		"registry.test/team/app":{"auth":"ZG9ja2VyLWFwcDpwYXNzd29yZA=="},
+		"registry.test/team":{"auth":"ZG9ja2VyLXRlYW06cGFzc3dvcmQ="}
+	}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registryAuthFile, []byte(`{"auths":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("DOCKER_AUTH_CONFIG", `{"auths":{
+		"registry.test":{"auth":"ZW52LWhvc3Q6cGFzc3dvcmQ="},
+		"registry.test/team/app":{"auth":"ZW52LWFwcDpwYXNzd29yZA=="}
+	}}`)
+	t.Setenv("DOCKER_CONFIG", dockerDirectory)
+	t.Setenv("REGISTRY_AUTH_FILE", registryAuthFile)
+	emptyEncodedConfig := base64.StdEncoding.EncodeToString([]byte(`{"auths":{}}`))
+	t.Setenv("DOCKER_AUTH_CONFIG_BASE64", emptyEncodedConfig)
+	t.Setenv("DOCKER_AUTH_CONFIG_ENCODED", emptyEncodedConfig)
+
+	adapter, err := NewDefault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := resolveCredential(t, adapter, "registry.test", "team/app")
+	if credential.Username != "env-app" {
+		t.Fatalf("same scoped path ignored source priority: %#v", credential)
+	}
+	credential = resolveCredential(t, adapter, "registry.test", "team/other")
+	if credential.Username != "docker-team" {
+		t.Fatalf("scoped path did not beat higher-priority host: %#v", credential)
+	}
+}
+
+// TestScopedBearerAuthenticationDoesNotLeakAcrossRepositories verifies token isolation.
+func TestScopedBearerAuthenticationDoesNotLeakAcrossRepositories(t *testing.T) {
+	users := map[string]struct {
+		username string
+		password string
+		token    string
+	}{
+		"org-a": {username: "user-a", password: "password-a", token: "token-a"},
+		"org-b": {username: "user-b", password: "password-b", token: "token-b"},
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/token" {
+			scope := request.URL.Query().Get("scope")
+			organization := "org-a"
+			if strings.Contains(scope, "repository:org-b/app:") {
+				organization = "org-b"
+			}
+			expected := users[organization]
+			username, password, ok := request.BasicAuth()
+			if !ok || username != expected.username || password != expected.password {
+				writer.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = writer.Write([]byte(fmt.Sprintf(`{"token":%q}`, expected.token)))
+			return
+		}
+
+		parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
+		if len(parts) < 4 || parts[0] != "v2" || parts[2] != "app" {
+			http.NotFound(writer, request)
+			return
+		}
+		expected, ok := users[parts[1]]
+		if !ok {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Header.Get("Authorization") != "Bearer "+expected.token {
+			writer.Header().Set("WWW-Authenticate", fmt.Sprintf(
+				`Bearer realm=%q,service=%q`, server.URL+"/token", "registry.test"))
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"tags":[]}`))
+	}))
+	defer server.Close()
+
+	host := strings.TrimPrefix(server.URL, "http://")
+	config := fmt.Sprintf(`{"auths":{
+		%q:{"auth":%q},
+		%q:{"auth":%q}
+	}}`,
+		host+"/org-a", base64.StdEncoding.EncodeToString([]byte("user-a:password-a")),
+		host+"/org-b", base64.StdEncoding.EncodeToString([]byte("user-b:password-b")))
+	adapter, err := New(WithDockerAuthConfigJSON([]byte(config)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, repository := range []string{"org-a/app", "org-b/app", "org-a/app", "org-b/app"} {
+		repo, err := remote.NewRepository(host + "/" + repository)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo.PlainHTTP = true
+		if err := adapter.WrapRepository(repo); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.Tags(context.Background(), "", func([]string) error { return nil }); err != nil {
+			t.Fatalf("list tags for %s: %v", repository, err)
+		}
+	}
+}
+
+// resolveCredential resolves a scoped credential and fails the test on errors.
+func resolveCredential(t *testing.T, adapter *Adapter, host, repository string) auth.Credential {
+	t.Helper()
+	ctx := auth.AppendRepositoryScope(
+		context.Background(),
+		registry.Reference{Registry: host, Repository: repository},
+		auth.ActionPull)
+	credential, err := adapter.CredentialFunc(nil)(ctx, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return credential
 }
