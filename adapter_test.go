@@ -8,6 +8,14 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -198,5 +206,130 @@ func TestGuardMountFromFiltersCandidatesByDestinationPrincipal(t *testing.T) {
 	}
 	if len(candidates) != 1 || candidates[0] != "team/source" {
 		t.Fatalf("unexpected mount candidates: %#v", candidates)
+	}
+}
+
+// TestAppendEncodedConfigRejectsConflictingAliases verifies alias conflict handling.
+func TestAppendEncodedConfigRejectsConflictingAliases(t *testing.T) {
+	first := base64.StdEncoding.EncodeToString([]byte(`{"auths":{}}`))
+	second := base64.StdEncoding.EncodeToString([]byte(`{"auths":{"registry.test":{}}}`))
+	t.Setenv("DOCKER_AUTH_CONFIG_BASE64", first)
+	t.Setenv("DOCKER_AUTH_CONFIG_ENCODED", second)
+
+	_, err := appendEncodedConfig(nil)
+	if !errors.Is(err, ErrConflictingEncodedAuthConfig) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// TestAppendEncodedConfigAcceptsEquivalentAliases verifies aliases add one source.
+func TestAppendEncodedConfigAcceptsEquivalentAliases(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(`{"auths":{}}`))
+	t.Setenv("DOCKER_AUTH_CONFIG_BASE64", encoded)
+	t.Setenv("DOCKER_AUTH_CONFIG_ENCODED", encoded)
+
+	inputs, err := appendEncodedConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || inputs[0].id != "env:DOCKER_AUTH_CONFIG_BASE64" {
+		t.Fatalf("unexpected encoded inputs: %#v", inputs)
+	}
+}
+
+// TestSourceHostCredentialUsesHelper verifies helpers receive only the registry host.
+func TestSourceHostCredentialUsesHelper(t *testing.T) {
+	helperDirectory := t.TempDir()
+	helperName := "docker-credential-orascope-test"
+	helperPath := filepath.Join(helperDirectory, helperName)
+	if runtime.GOOS == "windows" {
+		helperPath += ".exe"
+	}
+	sourcePath := filepath.Join(helperDirectory, "main.go")
+	helperSource := `package main
+import (
+ "fmt"
+ "io"
+ "os"
+)
+func main() {
+ input, _ := io.ReadAll(os.Stdin)
+ if string(input) != "registry.test" { os.Exit(2) }
+ fmt.Print(` + "`" + `{"Username":"helper-user","Secret":"helper-password"}` + "`" + `)
+}`
+	if err := os.WriteFile(sourcePath, []byte(helperSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-o", helperPath, sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build helper: %v: %s", err, output)
+	}
+	t.Setenv("PATH", helperDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	source := source{helpers: map[string]string{"registry.test": "orascope-test"}}
+	credential, err := source.hostCredential(context.Background(), "registry.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.Username != "helper-user" || credential.Password != "helper-password" {
+		t.Fatalf("unexpected helper credential: %#v", credential)
+	}
+}
+
+// TestScopedBasicAuthenticationDoesNotLeakAcrossRepositories verifies cache isolation.
+func TestScopedBasicAuthenticationDoesNotLeakAcrossRepositories(t *testing.T) {
+	users := map[string]struct {
+		username string
+		password string
+	}{
+		"org-a": {username: "user-a", password: "password-a"},
+		"org-b": {username: "user-b", password: "password-b"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
+		if len(parts) < 4 || parts[0] != "v2" || parts[2] != "app" {
+			http.NotFound(writer, request)
+			return
+		}
+		expected, ok := users[parts[1]]
+		if !ok {
+			http.NotFound(writer, request)
+			return
+		}
+		username, password, ok := request.BasicAuth()
+		if !ok || username != expected.username || password != expected.password {
+			writer.Header().Set("WWW-Authenticate", `Basic realm="registry"`)
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"tags":[]}`))
+	}))
+	defer server.Close()
+
+	host := strings.TrimPrefix(server.URL, "http://")
+	config := fmt.Sprintf(`{"auths":{
+		%q:{"auth":%q},
+		%q:{"auth":%q}
+	}}`,
+		host+"/org-a", base64.StdEncoding.EncodeToString([]byte("user-a:password-a")),
+		host+"/org-b", base64.StdEncoding.EncodeToString([]byte("user-b:password-b")))
+	adapter, err := New(WithDockerAuthConfigJSON([]byte(config)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, repository := range []string{"org-a/app", "org-b/app", "org-a/app", "org-b/app"} {
+		repo, err := remote.NewRepository(host + "/" + repository)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo.PlainHTTP = true
+		if err := adapter.WrapRepository(repo); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.Tags(context.Background(), "", func([]string) error { return nil }); err != nil {
+			t.Fatalf("list tags for %s: %v", repository, err)
+		}
 	}
 }
