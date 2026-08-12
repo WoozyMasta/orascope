@@ -154,6 +154,53 @@ func TestWrapRepositoryKeepsAuthClient(t *testing.T) {
 	}
 }
 
+// TestWrapAuthClientIsIdempotentWithoutCache verifies nil cache remains disabled.
+func TestWrapAuthClientIsIdempotentWithoutCache(t *testing.T) {
+	adapter, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	client := &auth.Client{
+		Credential: func(context.Context, string) (auth.Credential, error) {
+			calls++
+			return auth.Credential{Username: "user", Password: "password"}, nil
+		},
+	}
+	first, err := adapter.WrapAuthClient(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := adapter.WrapAuthClient(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first {
+		t.Fatal("wrapped client was cloned twice")
+	}
+	cacheCalls := 0
+	for range 2 {
+		if _, err := second.Cache.Set(
+			context.Background(), "registry.test", auth.SchemeBasic, "",
+			func(context.Context) (string, error) {
+				cacheCalls++
+				return "token", nil
+			}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cacheCalls != 2 {
+		t.Fatalf("disabled cache reused a token %d times", cacheCalls)
+	}
+	if _, err := second.Credential(context.Background(), "registry.test"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("fallback called %d times", calls)
+	}
+}
+
 // TestConvertEntryPasswordWithColon verifies auth decoding preserves colon data
 func TestConvertEntryPasswordWithColon(t *testing.T) {
 	value := base64.StdEncoding.EncodeToString([]byte("user:pass:word"))

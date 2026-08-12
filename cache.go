@@ -8,24 +8,51 @@ import (
 	"context"
 	"strings"
 
+	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
 // scopedCache applies a repository-scope namespace to an ORAS cache.
 type scopedCache struct {
-	// base stores the namespaced cache records.
-	base auth.Cache
+	adapter *Adapter   // adapter identifies the owner and prevents cross-adapter false idempotence.
+	base    auth.Cache // base stores the namespaced cache records.
 }
+
+// noCache preserves auth.Client nil-cache behavior while allowing a cache marker.
+type noCache struct{}
 
 // Cache namespaces an ORAS cache by the exact repository scopes in context.
 func (a *Adapter) Cache(base auth.Cache) auth.Cache {
-	if base == nil {
-		return nil
-	}
-	if _, ok := base.(*scopedCache); ok {
+	if cache, ok := base.(*scopedCache); ok && cache.adapter == a {
 		return base
 	}
-	return &scopedCache{base: base}
+	if base == nil {
+		// auth.Client with Cache == nil must not begin caching solely because it was adapted.
+		// noCache still marks the resulting client as wrapped.
+		base = noCache{}
+	}
+	return &scopedCache{adapter: a, base: base}
+}
+
+// GetScheme always reports no cached scheme.
+func (noCache) GetScheme(context.Context, string) (auth.Scheme, error) {
+	return auth.SchemeUnknown, errdef.ErrNotFound
+}
+
+// GetToken always reports no cached token.
+func (noCache) GetToken(context.Context, string, auth.Scheme, string) (string, error) {
+	return "", errdef.ErrNotFound
+}
+
+// Set obtains a token without storing it.
+func (noCache) Set(
+	ctx context.Context,
+	_ string,
+	_ auth.Scheme,
+	_ string,
+	fetch func(context.Context) (string, error),
+) (string, error) {
+	return fetch(ctx)
 }
 
 // GetScheme obtains the scheme from the repository-specific namespace.

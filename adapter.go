@@ -133,9 +133,8 @@ func (a *Adapter) WrapAuthClient(client *auth.Client) (*auth.Client, error) {
 	if client == nil {
 		client = auth.DefaultClient
 	}
-	if _, ok := client.Cache.(*scopedCache); ok {
-		// A scoped cache marks an already adapted client without function reflection.
-		return client, nil
+	if cache, ok := client.Cache.(*scopedCache); ok && cache.adapter == a {
+		return client, nil // A no-op cache preserves nil-cache semantics while providing this marker.
 	}
 
 	clone := *client
