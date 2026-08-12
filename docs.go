@@ -27,7 +27,6 @@ NewDefault discovers
 
   - DOCKER_AUTH_CONFIG,
   - Docker and containers auth files,
-  - legacy .dockercfg,
   - DOCKER_AUTH_CONFIG_BASE64 or DOCKER_AUTH_CONFIG_ENCODED.
 
 Configuration is read into an immutable snapshot at construction time;

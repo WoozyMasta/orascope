@@ -82,7 +82,7 @@ func main() {
 
 `NewDefault` reads a snapshot of these sources, in order:
 `DOCKER_AUTH_CONFIG`, Docker config, containers auth files,
-legacy `.dockercfg`, and encoded Docker config environment variables.
+and encoded Docker config environment variables.
 Recreate the adapter after changing a config.
 
 ## Important details

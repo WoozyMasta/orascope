@@ -60,11 +60,6 @@ func appendDiscovery(explicit []inputSource) ([]inputSource, error) {
 		"containers-persistent",
 		filepath.Join(xdg, "containers", "auth.json"),
 		false)
-	inputs = appendOptional(
-		inputs,
-		"dockercfg",
-		filepath.Join(home, ".dockercfg"),
-		false)
 
 	inputs, err = appendEncodedConfig(inputs)
 	if err != nil {
