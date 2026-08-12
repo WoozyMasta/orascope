@@ -110,19 +110,14 @@ func loadSource(input inputSource) (source, error) {
 
 // convertEntry converts one config entry using ORAS-compatible field priority.
 func convertEntry(entry authEntry) (auth.Credential, error) {
-	// Token fields take precedence because ORAS must not combine credential forms
-	if entry.RegistryToken != "" {
-		return auth.Credential{AccessToken: entry.RegistryToken}, nil
+	credential := auth.Credential{
+		Username:     entry.Username,
+		Password:     entry.Password,
+		RefreshToken: entry.IdentityToken,
+		AccessToken:  entry.RegistryToken,
 	}
-	if entry.IdentityToken != "" {
-		return auth.Credential{RefreshToken: entry.IdentityToken}, nil
-	}
-	if entry.Username != "" || entry.Password != "" {
-		return auth.Credential{Username: entry.Username, Password: entry.Password}, nil
-	}
-
 	if entry.Auth == "" {
-		return auth.EmptyCredential, nil
+		return credential, nil
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
@@ -134,7 +129,12 @@ func convertEntry(entry authEntry) (auth.Credential, error) {
 		return auth.EmptyCredential, ErrInvalidInlineAuth
 	}
 
-	return auth.Credential{Username: username, Password: password}, nil
+	// Docker's auth value only replaces the Basic pair;
+	// token fields are kept for ORAS Bearer and OAuth2 flows
+	credential.Username = username
+	credential.Password = password
+
+	return credential, nil
 }
 
 // hostCredential resolves a source's helper or inline host credential.

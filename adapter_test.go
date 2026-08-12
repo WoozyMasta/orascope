@@ -153,3 +153,24 @@ func TestConvertEntryPasswordWithColon(t *testing.T) {
 		t.Fatalf("got %#v, %v", cred, err)
 	}
 }
+
+// TestConvertEntryCombinesCredentialForms verifies ORAS-compatible field preservation.
+func TestConvertEntryCombinesCredentialForms(t *testing.T) {
+	credential, err := convertEntry(authEntry{
+		Auth:          base64.StdEncoding.EncodeToString([]byte("auth-user:auth-password")),
+		Username:      "explicit-user",
+		Password:      "explicit-password",
+		IdentityToken: "refresh-token",
+		RegistryToken: "access-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if credential.Username != "auth-user" || credential.Password != "auth-password" {
+		t.Fatalf("unexpected Basic credential: %#v", credential)
+	}
+	if credential.RefreshToken != "refresh-token" || credential.AccessToken != "access-token" {
+		t.Fatalf("unexpected token credential: %#v", credential)
+	}
+}
