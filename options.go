@@ -13,6 +13,7 @@ type Option func(*options) error
 type options struct {
 	fallback auth.CredentialFunc // fallback is the final host-level resolver.
 	sources  []inputSource       // sources is the precedence-ordered explicit source list.
+	discover bool                // discover controls automatic credential-source discovery.
 }
 
 // inputSource identifies either in-memory configuration bytes or a file path.
@@ -62,6 +63,15 @@ func WithContainersAuthPath(path string) Option {
 // WithAdditionalConfig adds an explicit compatible config file.
 func WithAdditionalConfig(path string) Option {
 	return withPath("option:additional-config", path)
+}
+
+// WithoutDiscovery disables automatic credential-source discovery.
+// Sources explicitly added through options remain active, followed by the fallback.
+func WithoutDiscovery() Option {
+	return func(options *options) error {
+		options.discover = false
+		return nil
+	}
 }
 
 // withPath creates an option for an explicit configuration path.

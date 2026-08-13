@@ -21,18 +21,23 @@ type Adapter struct {
 	sources  []source            // sources is the immutable precedence-ordered configuration snapshot.
 }
 
-// New creates an immutable adapter from explicit and discovered sources.
+// New creates an immutable adapter from explicit and automatically discovered sources.
+// WithoutDiscovery limits it to explicit sources.
 func New(opts ...Option) (*Adapter, error) {
-	var options options
+	options := options{discover: true}
 	for _, opt := range opts {
 		if err := opt(&options); err != nil {
 			return nil, err
 		}
 	}
 
-	inputs, err := appendDiscovery(options.sources)
-	if err != nil {
-		return nil, err
+	inputs := options.sources
+	if options.discover {
+		var err error
+		inputs, err = appendDiscovery(options.sources)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	sources := make([]source, 0, len(inputs))

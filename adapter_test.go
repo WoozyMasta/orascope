@@ -93,6 +93,29 @@ func TestScopedBeatsSourcePriorityAndMultiRepositoryFailsClosed(t *testing.T) {
 	}
 }
 
+func TestWithoutDiscoveryUsesOnlyExplicitSources(t *testing.T) {
+	// New would reject this malformed automatically discovered source.
+	// A successful construction proves WithoutDiscovery skips discovery entirely.
+	t.Setenv("DOCKER_AUTH_CONFIG_BASE64", "not-base64")
+
+	a, err := New(
+		WithDockerAuthConfigJSON([]byte(`{"auths":{"registry.test":{
+			"auth":"ZXhwbGljaXQ6c2VjcmV0"}}}`)),
+		WithoutDiscovery(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cred, err := a.CredentialFunc(nil)(context.Background(), "registry.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Username != "explicit" || cred.Password != "secret" {
+		t.Fatalf("got %#v, want explicit credential", cred)
+	}
+}
+
 // TestCacheIsolatedByRepository verifies sibling repository cache isolation
 func TestCacheIsolatedByRepository(t *testing.T) {
 	a, err := New()

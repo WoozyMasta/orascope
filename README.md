@@ -80,10 +80,13 @@ func main() {
 }
 ```
 
-`NewDefault` reads a snapshot of these sources, in order:
+By default, `New` and `NewDefault` read a snapshot of these sources, in order:
 `DOCKER_AUTH_CONFIG`, Docker config, containers auth files,
 and encoded Docker config environment variables.
 Recreate the adapter after changing a config.
+For isolated mode, use `New(WithDockerConfigPath(path), WithoutDiscovery())`.
+It uses only the explicitly provided sources
+and does not read credentials from the caller's environment or machine.
 
 ## Important details
 

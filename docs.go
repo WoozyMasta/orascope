@@ -23,7 +23,7 @@ A request with multiple repository scopes must resolve to one non-secret princip
 or fails with ErrAmbiguousRepositoryCredentials.
 GuardMountFrom can filter incompatible cross-repository mount candidates.
 
-NewDefault discovers
+By default, New and NewDefault discover
 
   - DOCKER_AUTH_CONFIG,
   - Docker and containers auth files,
@@ -31,6 +31,7 @@ NewDefault discovers
 
 Configuration is read into an immutable snapshot at construction time;
 recreate Adapter after changing its configuration.
+New with WithoutDiscovery uses only explicitly configured sources.
 
 For use with an existing ORAS repository, call WrapRepository.
 For repositories created by remote.Registry, call WrapRegistry. Both preserve *auth.Client.
